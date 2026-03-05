@@ -36,4 +36,4 @@ jobs:
           YOUTUBE_PLAYLIST_ID:      ${{ secrets.YOUTUBE_PLAYLIST_ID }}
           GOOGLE_CREDENTIALS_JSON:  ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SHEETS_DOC_ID:            ${{ secrets.SHEETS_DOC_ID }}
-        run: python main-2\ \(1\).py
+        run: python main.py
