@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-🌍 VIRAL SHORTS MACHINE — Python Edition v2.0
-YouTube upload via OAuth2 refresh token (works with GitHub Actions)
+🌍 VIRAL SHORTS MACHINE — Python Edition v3.0
+ffmpeg-based rendering (no Creatomate) — works 100% inside GitHub Actions
 """
 
-import os, json, time, base64, re, requests, feedparser
+import os, json, time, re, subprocess, tempfile, requests, feedparser
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.oauth2.credentials import Credentials
 from google.oauth2.service_account import Credentials as SACredentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
+from googleapiclient.http import MediaFileUpload
 import gspread
 
 # ─────────────────────────────────────────────
@@ -20,17 +20,16 @@ GROQ_API_KEY        = os.environ["GROQ_API_KEY"]
 DEEPGRAM_API_KEY    = os.environ["DEEPGRAM_API_KEY"]
 PEXELS_API_KEY      = os.environ["PEXELS_API_KEY"]
 PIXABAY_API_KEY     = os.environ["PIXABAY_API_KEY"]
-CREATOMATE_API_KEY  = os.environ["CREATOMATE_API_KEY"]
 YOUTUBE_PLAYLIST_ID = os.environ.get("YOUTUBE_PLAYLIST_ID", "")
 SHEETS_DOC_ID       = os.environ.get("SHEETS_DOC_ID", "")
 
 # YouTube OAuth tokens
-YT_CLIENT_ID        = os.environ["YT_CLIENT_ID"]
-YT_CLIENT_SECRET    = os.environ["YT_CLIENT_SECRET"]
-YT_REFRESH_TOKEN    = os.environ["YT_REFRESH_TOKEN"]
+YT_CLIENT_ID     = os.environ["YT_CLIENT_ID"]
+YT_CLIENT_SECRET = os.environ["YT_CLIENT_SECRET"]
+YT_REFRESH_TOKEN = os.environ["YT_REFRESH_TOKEN"]
 
 # Google Service Account (Sheets only)
-GOOGLE_CREDS_JSON   = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
 
 # ─────────────────────────────────────────────
 # 📡 STEP 1: جمع الأخبار
@@ -207,6 +206,9 @@ RULES:
 2. Script: EXACTLY 170-185 words, end with: Follow right now — we break these stories first.
 3. English only
 4. trending_hashtags: space-separated like #Economy #Markets
+5. overlay_headline: max 40 chars
+6. overlay_subtext: max 60 chars
+7. overlay_ticker: max 40 chars
 
 Return ONLY JSON:
 {{"youtube_title":"","youtube_title_b":"","hook_line":"","open_loop":"","shorts_script":"","description":"","tags":[],"overlay_headline":"","overlay_subtext":"","overlay_ticker":"","pexels_query":"","pixabay_query":"","category":"markets","virality_prediction":8,"algorithm_hook_0_3s":"","watch_through_strategy":"","comment_bait":"","share_trigger":"","community_post":"","optimal_post_time":"18:00-20:00 EST","trending_hashtags":""}}"""
@@ -228,7 +230,7 @@ Return ONLY JSON:
     r.raise_for_status()
     pkg = json.loads(r.json()["choices"][0]["message"]["content"])
     def clean(v):
-        if isinstance(v, str): return re.sub(r"[\u0600-\u06FF]+","",v).strip()
+        if isinstance(v, str): return re.sub(r"[\u0600-\u06FF]+", "", v).strip()
         if isinstance(v, list): return [clean(x) for x in v]
         return v
     pkg = {k: clean(v) for k, v in pkg.items()}
@@ -240,7 +242,8 @@ Return ONLY JSON:
 # 🎬 STEP 4: B-Roll Video
 # ─────────────────────────────────────────────
 
-def get_video_url(pq, xq):
+def download_video(pq, xq, dest_path):
+    url = None
     try:
         r = requests.get(
             "https://api.pexels.com/videos/search",
@@ -254,32 +257,46 @@ def get_video_url(pq, xq):
                  or next((f for f in files if f.get("quality") == "hd"), None) \
                  or (files[0] if files else None)
             if pick and pick.get("link"):
+                url = pick["link"]
                 print(f"[VIDEO] ✅ Pexels")
-                return pick["link"]
+                break
     except Exception as e:
         print(f"[VIDEO] Pexels error: {e}")
-    try:
-        r = requests.get(
-            "https://pixabay.com/api/videos/",
-            params={"key": PIXABAY_API_KEY, "q": xq, "per_page": 5, "safesearch": "true"},
-            timeout=10
-        )
-        for v in r.json().get("hits", []):
-            vids = v.get("videos", {})
-            url  = (vids.get("large") or vids.get("medium") or vids.get("small") or {}).get("url")
-            if url:
-                print(f"[VIDEO] ✅ Pixabay")
-                return url
-    except Exception as e:
-        print(f"[VIDEO] Pixabay error: {e}")
-    print("[VIDEO] Using fallback")
-    return "https://videos.pexels.com/video-files/3191528/3191528-uhd_2160_4096_25fps.mp4"
+
+    if not url:
+        try:
+            r = requests.get(
+                "https://pixabay.com/api/videos/",
+                params={"key": PIXABAY_API_KEY, "q": xq, "per_page": 5, "safesearch": "true"},
+                timeout=10
+            )
+            for v in r.json().get("hits", []):
+                vids = v.get("videos", {})
+                u    = (vids.get("large") or vids.get("medium") or vids.get("small") or {}).get("url")
+                if u:
+                    url = u
+                    print(f"[VIDEO] ✅ Pixabay")
+                    break
+        except Exception as e:
+            print(f"[VIDEO] Pixabay error: {e}")
+
+    if not url:
+        url = "https://videos.pexels.com/video-files/3191528/3191528-uhd_2160_4096_25fps.mp4"
+        print("[VIDEO] Using fallback")
+
+    print("[VIDEO] Downloading...")
+    r = requests.get(url, timeout=120, stream=True)
+    r.raise_for_status()
+    with open(dest_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+    print(f"[VIDEO] ✅ Saved ({os.path.getsize(dest_path)//1024//1024} MB)")
 
 # ─────────────────────────────────────────────
 # 🎙️ STEP 5: Deepgram TTS
 # ─────────────────────────────────────────────
 
-def generate_audio(script):
+def generate_audio(script, dest_path):
     print(f"[TTS] Generating audio ({len(script.split())} words)...")
     r = requests.post(
         "https://api.deepgram.com/v1/speak?model=aura-asteria-en",
@@ -290,62 +307,82 @@ def generate_audio(script):
     r.raise_for_status()
     if len(r.content) < 1000:
         raise ValueError(f"Audio too small: {len(r.content)} bytes")
-    print(f"[TTS] ✅ {len(r.content)//1024} KB")
-    b64 = base64.b64encode(r.content).decode()
-    return f"data:audio/mpeg;base64,{b64}"
+    with open(dest_path, "wb") as f:
+        f.write(r.content)
+    print(f"[TTS] ✅ {len(r.content)//1024} KB saved")
 
 # ─────────────────────────────────────────────
-# 🎬 STEP 6: Creatomate
+# 🎬 STEP 6: ffmpeg — دمج كل شيء محلياً
 # ─────────────────────────────────────────────
 
-def render_video(pkg, video_url, audio_uri):
-    duration = max(60, round(len(pkg.get("shorts_script","").split()) / 2.8) + 5)
-    print(f"[CREATOMATE] Rendering {duration}s video...")
-    body = {
-        "source": {
-            "output_format": "mp4",
-            "width": 1080, "height": 1920, "duration": duration,
-            "elements": [
-                {"type":"video","source":video_url,"fit":"cover","duration":duration},
-                {"type":"audio","source":audio_uri,"duration":duration},
-                {"type":"shape","x":"0%","y":"0%","width":"100%","height":"16%","fill_color":"rgba(0,0,0,0.82)"},
-                {"type":"text","text":str(pkg.get("overlay_headline","BREAKING NEWS"))[:55],"x":"50%","y":"8%","width":"92%","font_family":"Montserrat","font_weight":800,"font_size":50,"fill_color":"#FFFFFF","x_anchor":0.5,"y_anchor":0.5},
-                {"type":"text","text":str(pkg.get("overlay_subtext",""))[:75],"x":"50%","y":"13.5%","width":"92%","font_family":"Montserrat","font_weight":500,"font_size":26,"fill_color":"#FFD700","x_anchor":0.5,"y_anchor":0.5},
-                {"type":"shape","x":"0%","y":"88%","width":"100%","height":"12%","fill_color":"rgba(200,0,0,0.88)"},
-                {"type":"text","text":str(pkg.get("overlay_ticker","FINANCIAL NEWS"))[:55],"x":"50%","y":"94%","width":"92%","font_family":"Montserrat","font_weight":700,"font_size":22,"fill_color":"#FFFFFF","x_anchor":0.5,"y_anchor":0.5},
-            ]
-        }
-    }
-    r = requests.post(
-        "https://api.creatomate.com/v1/renders",
-        headers={"Authorization": f"Bearer {CREATOMATE_API_KEY}", "Content-Type": "application/json"},
-        json=body, timeout=30
+def render_video_ffmpeg(pkg, video_path, audio_path, output_path):
+    headline = pkg.get("overlay_headline", "BREAKING NEWS")[:40]
+    subtext  = pkg.get("overlay_subtext",  "")[:60]
+    ticker   = pkg.get("overlay_ticker",   "FINANCIAL NEWS")[:40]
+
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("'", "\u2019").replace(":", "\\:")
+
+    headline = esc(headline)
+    subtext  = esc(subtext)
+    ticker   = esc(ticker)
+
+    # احسب مدة الصوت
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            audio_path
+        ], stderr=subprocess.DEVNULL).decode().strip()
+        audio_duration = float(out)
+    except Exception:
+        audio_duration = 60.0
+
+    video_duration = audio_duration + 2.0
+    print(f"[FFMPEG] Audio: {audio_duration:.1f}s → Video: {video_duration:.1f}s")
+
+    vf = (
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,"
+        "drawbox=x=0:y=0:w=1080:h=180:color=black@0.82:t=fill,"
+        f"drawtext=text='{headline}'"
+        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        ":fontsize=52:fontcolor=white:x=(w-text_w)/2:y=60,"
+        f"drawtext=text='{subtext}'"
+        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        ":fontsize=28:fontcolor=#FFD700:x=(w-text_w)/2:y=130,"
+        "drawbox=x=0:y=1800:w=1080:h=120:color=red@0.88:t=fill,"
+        f"drawtext=text='{ticker}'"
+        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        ":fontsize=30:fontcolor=white:x=(w-text_w)/2:y=1840"
     )
-    r.raise_for_status()
-    renders = r.json()
-    render  = renders[0] if isinstance(renders, list) else renders
-    if not render.get("id"):
-        raise ValueError(f"No render_id: {render}")
-    print(f"[CREATOMATE] ✅ render_id={render['id']}")
-    return render["id"]
 
-def wait_for_render(render_id):
-    print("[CREATOMATE] Waiting 5 min for render...")
-    time.sleep(300)
-    for i in range(1, 13):
-        r    = requests.get(
-            f"https://api.creatomate.com/v1/renders/{render_id}",
-            headers={"Authorization": f"Bearer {CREATOMATE_API_KEY}"}, timeout=15
-        )
-        poll = r.json()
-        print(f"[CREATOMATE] Poll {i}/12 → {poll.get('status')} | {poll.get('url','none')[:50]}")
-        if poll.get("status") == "succeeded" and poll.get("url"):
-            return poll["url"]
-        if poll.get("status") == "failed":
-            raise ValueError(f"Render failed: {poll.get('error_message')}")
-        if i < 12:
-            time.sleep(30)
-    raise TimeoutError("Render timed out")
+    cmd = [
+        "ffmpeg", "-y",
+        "-stream_loop", "-1",
+        "-i", video_path,
+        "-i", audio_path,
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-t", str(video_duration),
+        "-shortest",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        output_path
+    ]
+
+    print("[FFMPEG] Rendering...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[FFMPEG] stderr:\n{result.stderr[-2000:]}")
+        raise RuntimeError(f"ffmpeg failed with code {result.returncode}")
+
+    print(f"[FFMPEG] ✅ Done — {os.path.getsize(output_path)/1024/1024:.1f} MB")
 
 # ─────────────────────────────────────────────
 # 📤 STEP 7: Upload to YouTube (OAuth2)
@@ -358,31 +395,29 @@ def get_youtube_service():
         client_id=YT_CLIENT_ID,
         client_secret=YT_CLIENT_SECRET,
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/youtube.upload",
-                "https://www.googleapis.com/auth/youtube"]
+        scopes=[
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube"
+        ]
     )
     return build("youtube", "v3", credentials=creds)
 
-def upload_youtube(video_url, pkg, news):
-    print("[YOUTUBE] Downloading rendered video...")
-    r = requests.get(video_url, timeout=120)
-    r.raise_for_status()
-    print(f"[YOUTUBE] Video: {len(r.content)//1024//1024} MB")
-
+def upload_youtube(video_path, pkg, news):
+    print(f"[YOUTUBE] Uploading {os.path.getsize(video_path)//1024//1024} MB...")
     youtube = get_youtube_service()
     body = {
         "snippet": {
-            "title":       pkg.get("youtube_title","BREAKING Financial News")[:100],
-            "description": pkg.get("description","") + "\n\n" + pkg.get("trending_hashtags",""),
+            "title":       pkg.get("youtube_title", "BREAKING Financial News")[:100],
+            "description": pkg.get("description", "") + "\n\n" + pkg.get("trending_hashtags", ""),
             "tags":        pkg.get("tags", []),
             "categoryId":  "25",
         },
         "status": {
-            "privacyStatus": "public",
+            "privacyStatus":           "public",
             "selfDeclaredMadeForKids": False,
         }
     }
-    media    = MediaInMemoryUpload(r.content, mimetype="video/mp4", resumable=True)
+    media    = MediaFileUpload(video_path, mimetype="video/mp4", resumable=True)
     req      = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
     while response is None:
@@ -396,7 +431,10 @@ def upload_youtube(video_url, pkg, news):
     if YOUTUBE_PLAYLIST_ID:
         youtube.playlistItems().insert(
             part="snippet",
-            body={"snippet":{"playlistId":YOUTUBE_PLAYLIST_ID,"resourceId":{"kind":"youtube#video","videoId":video_id}}}
+            body={"snippet": {
+                "playlistId": YOUTUBE_PLAYLIST_ID,
+                "resourceId": {"kind": "youtube#video", "videoId": video_id}
+            }}
         ).execute()
         print("[YOUTUBE] ✅ Added to playlist")
 
@@ -443,23 +481,32 @@ def process_story(news):
     print(f"\n{'='*60}")
     print(f"🎬 {news['title'][:70]}")
     print(f"{'='*60}")
-    try:
-        pkg       = generate_content(news)
-        video_url = get_video_url(pkg.get("pexels_query","stock market"), pkg.get("pixabay_query","economy"))
-        audio_uri = generate_audio(pkg.get("shorts_script","Breaking financial news."))
-        render_id = render_video(pkg, video_url, audio_uri)
-        out_url   = wait_for_render(render_id)
-        video_id  = upload_youtube(out_url, pkg, news)
-        log_to_sheets(video_id, pkg, news)
-        print(f"\n✅ SUCCESS: https://youtube.com/shorts/{video_id}")
-        return True
-    except Exception as e:
-        print(f"\n❌ FAILED: {e}")
-        import traceback; traceback.print_exc()
-        return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        video_raw  = os.path.join(tmp, "broll.mp4")
+        audio_file = os.path.join(tmp, "voice.mp3")
+        output     = os.path.join(tmp, "final.mp4")
+
+        try:
+            pkg = generate_content(news)
+            download_video(
+                pkg.get("pexels_query", "stock market"),
+                pkg.get("pixabay_query", "economy"),
+                video_raw
+            )
+            generate_audio(pkg.get("shorts_script", "Breaking financial news."), audio_file)
+            render_video_ffmpeg(pkg, video_raw, audio_file, output)
+            video_id = upload_youtube(output, pkg, news)
+            log_to_sheets(video_id, pkg, news)
+            print(f"\n✅ SUCCESS: https://youtube.com/shorts/{video_id}")
+            return True
+        except Exception as e:
+            print(f"\n❌ FAILED: {e}")
+            import traceback; traceback.print_exc()
+            return False
 
 def main():
-    print(f"\n🌍 VIRAL SHORTS MACHINE v2.0 — {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"\n🌍 VIRAL SHORTS MACHINE v3.0 — {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
     print("="*60)
     all_news    = collect_all_news()
     top_stories = pick_top_stories(all_news, n=3)
