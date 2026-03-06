@@ -16,7 +16,7 @@ FIXES v5.1:
  [7] zoompan replaced with fast static-zoom (was causing timeout >40 min)
  [8] cap_filter built as list items, not pre-joined string (filter ordering bug)
  [9] DDG rate-limit: sequential not parallel for image search
-[10] asyncio fallback for edge_tts in case loop already exists
+[10] TTS: switched from edge-tts to gTTS (Google) — works on GitHub Actions
 """
 
 import os, json, re, subprocess, tempfile, glob, requests, feedparser
@@ -774,22 +774,16 @@ def prepare_logo(tmp: str) -> str | None:
 # 🎙️  STEP 5 — EDGE-TTS (FREE, no API key)
 # ─────────────────────────────────────────────
 def generate_audio(script: str, dest: str):
-    print(f"[TTS] {len(script.split())} words | Voice: {TTS_VOICE}")
-    try:    import edge_tts
-    except: subprocess.run(["pip", "install", "edge-tts", "-q"], check=True); import edge_tts
-
-    async def _generate():
-        comm = edge_tts.Communicate(text=script, voice=TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
-        await comm.save(dest)
-
-    # FIX [10]: handle case where event loop already exists
+    print(f"[TTS] {len(script.split())} words | Engine: gTTS")
     try:
-        asyncio.run(_generate())
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_generate())
-        loop.close()
+        from gtts import gTTS
+    except ImportError:
+        subprocess.run(["pip", "install", "gtts", "-q"], check=True)
+        from gtts import gTTS
+
+    # gTTS → mp3 directly — no API key, works on GitHub Actions
+    tts = gTTS(text=script, lang="en", slow=False)
+    tts.save(dest)
 
     if not os.path.exists(dest) or os.path.getsize(dest) < 2000:
         raise ValueError("TTS audio too small or missing")
