@@ -4,7 +4,7 @@
 ffmpeg-based rendering (no Creatomate) — works 100% inside GitHub Actions
 """
 
-import os, json, time, re, subprocess, tempfile, requests, feedparser
+import os, json, re, subprocess, tempfile, glob, requests, feedparser
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.oauth2.credentials import Credentials
@@ -30,6 +30,44 @@ YT_REFRESH_TOKEN = os.environ["YT_REFRESH_TOKEN"]
 
 # Google Service Account (Sheets only)
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+
+# ─────────────────────────────────────────────
+# 🔤 Font Detection — لا hardcode، يكتشف تلقائياً
+# ─────────────────────────────────────────────
+
+def find_font(bold=False):
+    """
+    يبحث عن أي خط TTF متاح على النظام.
+    يفضل DejaVu، ثم Liberation، ثم أي خط آخر.
+    """
+    candidates_bold = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    candidates_regular = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ]
+    candidates = candidates_bold if bold else candidates_regular
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    # fallback: أي خط TTF على النظام
+    results = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True)
+    if results:
+        return results[0]
+    raise FileNotFoundError("No TTF font found on system. Run: sudo apt-get install -y fonts-dejavu")
+
+FONT_BOLD    = find_font(bold=True)
+FONT_REGULAR = find_font(bold=False)
+print(f"[FONT] Bold:    {FONT_BOLD}")
+print(f"[FONT] Regular: {FONT_REGULAR}")
 
 # ─────────────────────────────────────────────
 # 📡 STEP 1: جمع الأخبار
@@ -206,9 +244,9 @@ RULES:
 2. Script: EXACTLY 170-185 words, end with: Follow right now — we break these stories first.
 3. English only
 4. trending_hashtags: space-separated like #Economy #Markets
-5. overlay_headline: max 40 chars
-6. overlay_subtext: max 60 chars
-7. overlay_ticker: max 40 chars
+5. overlay_headline: max 40 chars, plain text only, no special characters
+6. overlay_subtext: max 60 chars, plain text only, no special characters
+7. overlay_ticker: max 40 chars, plain text only, no special characters
 
 Return ONLY JSON:
 {{"youtube_title":"","youtube_title_b":"","hook_line":"","open_loop":"","shorts_script":"","description":"","tags":[],"overlay_headline":"","overlay_subtext":"","overlay_ticker":"","pexels_query":"","pixabay_query":"","category":"markets","virality_prediction":8,"algorithm_hook_0_3s":"","watch_through_strategy":"","comment_bait":"","share_trigger":"","community_post":"","optimal_post_time":"18:00-20:00 EST","trending_hashtags":""}}"""
@@ -315,17 +353,20 @@ def generate_audio(script, dest_path):
 # 🎬 STEP 6: ffmpeg — دمج كل شيء محلياً
 # ─────────────────────────────────────────────
 
+def esc_ffmpeg(s):
+    """تنظيف النص لاستخدامه في drawtext بأمان تام"""
+    # احتفظ بالحروف الآمنة فقط
+    s = re.sub(r"[^\w\s\$\%\.\,\!\?\-\+]", "", s)
+    # escape الأحرف الخاصة في ffmpeg
+    s = s.replace("\\", "\\\\")
+    s = s.replace("'",  "")
+    s = s.replace(":",  "\\:")
+    return s.strip()
+
 def render_video_ffmpeg(pkg, video_path, audio_path, output_path):
-    headline = pkg.get("overlay_headline", "BREAKING NEWS")[:40]
-    subtext  = pkg.get("overlay_subtext",  "")[:60]
-    ticker   = pkg.get("overlay_ticker",   "FINANCIAL NEWS")[:40]
-
-    def esc(s):
-        return s.replace("\\", "\\\\").replace("'", "\u2019").replace(":", "\\:")
-
-    headline = esc(headline)
-    subtext  = esc(subtext)
-    ticker   = esc(ticker)
+    headline = esc_ffmpeg(pkg.get("overlay_headline", "BREAKING NEWS")[:40])
+    subtext  = esc_ffmpeg(pkg.get("overlay_subtext",  "Markets Update")[:60])
+    ticker   = esc_ffmpeg(pkg.get("overlay_ticker",   "FINANCIAL NEWS")[:40])
 
     # احسب مدة الصوت
     try:
@@ -343,24 +384,27 @@ def render_video_ffmpeg(pkg, video_path, audio_path, output_path):
     print(f"[FFMPEG] Audio: {audio_duration:.1f}s → Video: {video_duration:.1f}s")
 
     vf = (
+        # تحويل لـ portrait 1080x1920
         "scale=1080:1920:force_original_aspect_ratio=increase,"
         "crop=1080:1920,"
-        "drawbox=x=0:y=0:w=1080:h=180:color=black@0.82:t=fill,"
-        f"drawtext=text='{headline}'"
-        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        ":fontsize=52:fontcolor=white:x=(w-text_w)/2:y=60,"
-        f"drawtext=text='{subtext}'"
-        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        ":fontsize=28:fontcolor=#FFD700:x=(w-text_w)/2:y=130,"
+        # شريط أسود علوي
+        "drawbox=x=0:y=0:w=1080:h=185:color=black@0.82:t=fill,"
+        # headline
+        f"drawtext=fontfile='{FONT_BOLD}':text='{headline}'"
+        ":fontsize=52:fontcolor=white:x=(w-text_w)/2:y=55:line_spacing=4,"
+        # subtext
+        f"drawtext=fontfile='{FONT_REGULAR}':text='{subtext}'"
+        ":fontsize=28:fontcolor=#FFD700:x=(w-text_w)/2:y=130:line_spacing=4,"
+        # شريط أحمر سفلي
         "drawbox=x=0:y=1800:w=1080:h=120:color=red@0.88:t=fill,"
-        f"drawtext=text='{ticker}'"
-        ":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        ":fontsize=30:fontcolor=white:x=(w-text_w)/2:y=1840"
+        # ticker
+        f"drawtext=fontfile='{FONT_BOLD}':text='{ticker}'"
+        ":fontsize=30:fontcolor=white:x=(w-text_w)/2:y=1843:line_spacing=4"
     )
 
     cmd = [
         "ffmpeg", "-y",
-        "-stream_loop", "-1",
+        "-stream_loop", "-1",       # كرر الفيديو إن كان أقصر من الصوت
         "-i", video_path,
         "-i", audio_path,
         "-vf", vf,
