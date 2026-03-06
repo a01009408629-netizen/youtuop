@@ -1018,15 +1018,16 @@ def upload_youtube(video_path: str, pkg: dict) -> str:
 
     description = (
         pkg.get("description", "") + "\n\n"
+        + "#Shorts #FinancialNews\n"
         + pkg.get("trending_hashtags", "") + "\n\n"
         + "💬 " + pkg.get("comment_bait", "What do you think will happen next?")
     )
 
     body = {
         "snippet": {
-            "title":               pkg.get("youtube_title", "BREAKING Financial News")[:100],
+            "title":               (pkg.get("youtube_title", "BREAKING Financial News") + " #Shorts")[:100],
             "description":         description[:5000],
-            "tags":                pkg.get("tags", [])[:30],
+            "tags":                (["#Shorts", "#FinancialNews"] + pkg.get("tags", []))[:30],
             "categoryId":          "25",
             "defaultLanguage":     "en",
             "defaultAudioLanguage":"en",
@@ -1035,6 +1036,7 @@ def upload_youtube(video_path: str, pkg: dict) -> str:
             "privacyStatus":           "public",
             "selfDeclaredMadeForKids": False,
             "madeForKids":             False,
+            "embeddable":              True,
         }
     }
 
@@ -1080,7 +1082,7 @@ def log_sheets(vid_id: str, pkg: dict, stories: list):
             ]
         )
         # gspread v5 compatible — works on both v5 and pinned v5.x
-        gc    = gspread.Client(auth=creds)
+        gc    = gspread.authorize(creds)
         sheet = gc.open_by_key(SHEETS_DOC_ID).worksheet("Shorts Log")
         now   = datetime.now()
         titles = " + ".join(s.get("title", "")[:35] for s in stories)
