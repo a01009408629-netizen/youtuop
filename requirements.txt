@@ -1,7 +1,19 @@
-requests==2.31.0
-feedparser==6.0.11
-gspread==6.1.2
-google-auth==2.29.0
-google-auth-oauthlib==1.2.0
-google-auth-httplib2==0.2.0
-google-api-python-client==2.126.0
+# ── Google / YouTube ─────────────────────────────────────────
+google-auth>=2.0,<3
+google-auth-oauthlib>=1.0,<2
+google-auth-httplib2>=0.2           # BUG-C fix: required by gspread service account
+google-api-python-client>=2.0,<3
+
+# BUG-B fix: pin gspread to v5.x — v6.x removed gspread.authorize() entirely
+gspread>=5.10,<6
+
+# ── Data / Feeds ─────────────────────────────────────────────
+requests>=2.31
+feedparser>=6.0
+duckduckgo-search>=6.0              # image search for real visuals
+
+# ── Media / TTS ──────────────────────────────────────────────
+edge-tts>=6.1                       # free Microsoft TTS, no API key needed
+Pillow>=10.0                        # image card generation
+
+# ── No DEEPGRAM — removed in v5.0 ───────────────────────────
