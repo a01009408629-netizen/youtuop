@@ -1010,11 +1010,16 @@ def upload_youtube(video_path: str, pkg: dict) -> str:
     print(f"[YT] Uploading {size} MB...")
     yt = get_youtube()
 
+    def s(v, default=""):
+        """Ensure value is a plain string — Groq sometimes returns list"""
+        if isinstance(v, list): return " ".join(str(x) for x in v)
+        return str(v) if v else default
+
     description = (
-        pkg.get("description", "") + "\n\n"
+        s(pkg.get("description")) + "\n\n"
         + "#Shorts #FinancialNews\n"
-        + pkg.get("trending_hashtags", "") + "\n\n"
-        + "💬 " + pkg.get("comment_bait", "What do you think will happen next?")
+        + s(pkg.get("trending_hashtags")) + "\n\n"
+        + "💬 " + s(pkg.get("comment_bait"), "What do you think will happen next?")
     )
 
     body = {
