@@ -1,100 +1,29 @@
-name: 🌍 VIRAL SHORTS MACHINE v5.1
-
-# ─────────────────────────────────────────────────────────────
-# Runs 4× per day at peak financial news hours (UTC)
-# 04:00 = US pre-market prep  | 10:00 = US morning open
-# 16:00 = US afternoon        | 22:00 = Asia/overnight
-# ─────────────────────────────────────────────────────────────
+name: 🌍 Viral Shorts Machine v5.1
 on:
   schedule:
-    - cron: "0 4,10,16,22 * * *"
-  workflow_dispatch:               # manual trigger from GitHub UI
-
+    - cron: '0 7,10,13,16,19,22 * * *'
+  workflow_dispatch:
 jobs:
-  generate-and-upload:
+  run:
     runs-on: ubuntu-latest
-
-    # BUG-F FIX: was 30 → now 55 min
-    # 2 episodes × (DDG ~3min + Pexels ~2min + TTS ~1min + render ~5min + upload ~3min) = ~28min
-    # Plus startup/install overhead ~5min = ~33min total. 55 gives comfortable headroom.
     timeout-minutes: 55
-
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # ── 2. Python setup ─────────────────────────────────────
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      # ── 3. BUG-I FIX: Cache pip dependencies ────────────────
-      # Saves ~90 seconds on every run after the first
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      # ── 4. System packages (ffmpeg + fonts) ─────────────────
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg \
-            fonts-dejavu-core \
-            fonts-dejavu \
-            fonts-liberation
-          ffmpeg -version | head -1
-          fc-list | grep -i dejavu | head -3
-
-      # ── 5. BUG-G FIX: Upgrade pip before installing ─────────
-      - name: Upgrade pip + install Python packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -c "import gspread; print(f'gspread version: {gspread.__version__}')"
-          python -c "import edge_tts; print('edge_tts OK')"
-          python -c "from PIL import Image; print('Pillow OK')"
-          python -c "from duckduckgo_search import DDGS; print('DDG OK')"
-
-      # ── 6. Run the machine ───────────────────────────────────
-      - name: 🎬 Run Viral Shorts Machine
+          python-version: '3.11'
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fonts-liberation fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - name: Run
         env:
-          # ── Core AI ────────────────────────────────────────
-          GROQ_API_KEY:             ${{ secrets.GROQ_API_KEY }}
-
-          # ── Video sources ───────────────────────────────────
-          PEXELS_API_KEY:           ${{ secrets.PEXELS_API_KEY }}
-          PIXABAY_API_KEY:          ${{ secrets.PIXABAY_API_KEY }}
-
-          # ── YouTube OAuth (Web Application type) ───────────
-          YT_CLIENT_ID:             ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET:         ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN:         ${{ secrets.YT_REFRESH_TOKEN }}
-
-          # ── YouTube optional ────────────────────────────────
-          YOUTUBE_PLAYLIST_ID:      ${{ secrets.YOUTUBE_PLAYLIST_ID }}
-
-          # ── Google Sheets (Service Account JSON) ────────────
-          GOOGLE_CREDENTIALS_JSON:  ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          SHEETS_DOC_ID:            ${{ secrets.SHEETS_DOC_ID }}
-
-          # ── Branding ────────────────────────────────────────
-          LOGO_B64:                 ${{ secrets.LOGO_B64 }}
-
-          # BUG-H NOTE: DEEPGRAM_API_KEY intentionally removed — no longer used
+          GROQ_API_KEY:            ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY:          ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY:         ${{ secrets.PIXABAY_API_KEY }}
+          YT_CLIENT_ID:            ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET:        ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN:        ${{ secrets.YT_REFRESH_TOKEN }}
+          YOUTUBE_PLAYLIST_ID:     ${{ secrets.YOUTUBE_PLAYLIST_ID }}
+          SHEETS_DOC_ID:           ${{ secrets.SHEETS_DOC_ID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          LOGO_B64:                ${{ secrets.LOGO_B64 }}
         run: python main.py
-
-      # ── 7. Upload logs on failure ────────────────────────────
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-log-${{ github.run_id }}
-          path: /tmp/
-          retention-days: 3
